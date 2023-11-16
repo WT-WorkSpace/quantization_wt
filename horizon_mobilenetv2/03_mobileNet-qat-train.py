@@ -32,6 +32,11 @@ from horizon_plugin_pytorch.quantization.qconfig import (
     default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
     default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
 )
+from horizon_plugin_pytorch.utils.onnx_helper import (
+    export_to_onnx,
+    export_quantized_onnx,
+)
+
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -217,7 +222,7 @@ class FxQATReadyMobileNetV2(MobileNetV2):
         return x
 
 
-float_model = torch.load("/wt_workspace/horizon/model/mobilenetv2/float-checkpoint.ckpt")
+float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
 model_path = "model/mobilenetv2"
 data_path = "data"
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -227,7 +232,7 @@ eval_batch_size = 256
 num_examples = float("inf")
 # 目标硬件平台的代号
 march = March.BAYES
-epoch_num = 10
+epoch_num = 1
 # 在进行模型转化前，必须设置好模型将要执行的硬件平台
 set_march(march)
 
@@ -249,7 +254,7 @@ qat_model = prepare_qat_fx(
 ).to(device)
 
 # 加载 Calibration 模型中的量化参数
-qat_model.load_state_dict(torch.load("/wt_workspace/horizon/model/mobilenetv2/calib-checkpoint_state_dict.ckpt"))
+qat_model.load_state_dict(torch.load("./model/mobilenetv2/calib-checkpoint_state_dict.ckpt"))
 # qat_model.load_state_dict(calib_model.state_dict())
 
 # 进行量化感知训练
@@ -296,4 +301,8 @@ for nepoch in range(epoch_num):
             qat_model.state_dict(),
             os.path.join(model_path, "qat-checkpoint.ckpt"),
         )
-        
+        for i, (image, target) in enumerate(eval_data_loader):
+            if i == 1:
+                image, target = image.to(device), target.to(device)
+                export_to_onnx(float_model,image,os.path.join(model_path,'MobileNetV2_qat_train.onnx'))
+                

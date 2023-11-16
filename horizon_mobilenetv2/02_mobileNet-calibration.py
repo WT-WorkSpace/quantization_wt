@@ -32,6 +32,11 @@ from horizon_plugin_pytorch.quantization.qconfig import (
     default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
     default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
 )
+from horizon_plugin_pytorch.utils.onnx_helper import (
+    export_to_onnx,
+    export_quantized_onnx,
+)
+
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -217,7 +222,7 @@ class FxQATReadyMobileNetV2(MobileNetV2):
         return x
 
 
-float_model = torch.load("/wt_workspace/horizon/model/mobilenetv2/float-checkpoint.ckpt")
+float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
 
 
 model_path = "model/mobilenetv2"
@@ -305,10 +310,8 @@ torch.save(
     calib_model.state_dict(),
     os.path.join(model_path, "calib-checkpoint_state_dict.ckpt"),
 )
-import sys  # 导入sys模块
-sys.setrecursionlimit(3000)  # 将默认的递归深度修改为3000
 
-torch.save(
-    calib_model,
-    os.path.join(model_path, "calib-checkpoint.ckpt"),
-)
+for i, (image, target) in enumerate(eval_data_loader):
+    if i == 1:
+        image, target = image.to(device), target.to(device)
+        torch.onnx.export(float_model,image,os.path.join(model_path,'MobileNetV2_calib.onnx'))
