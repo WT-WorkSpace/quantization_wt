@@ -32,6 +32,12 @@ from horizon_plugin_pytorch.quantization.qconfig import (
     default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
     default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
 )
+from horizon_plugin_pytorch.utils.onnx_helper import (
+    export_to_onnx,
+    export_quantized_onnx,
+)
+
+
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -262,6 +268,9 @@ def main():
     torch.save(
         quantized_model.state_dict(),
         os.path.join(model_path, "qat_convert_int8-checkpoint.ckpt") )
-
+    for i, (image, target) in enumerate(eval_data_loader):
+        if i == 1:
+            image, target = image.to(device), target.to(device)
+            export_quantized_onnx(float_model,image,os.path.join(model_path,'MobileNetV2_int8.onnx'))
 if __name__ == '__main__':
     main()

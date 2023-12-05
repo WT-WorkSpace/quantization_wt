@@ -33,12 +33,6 @@ from horizon_plugin_pytorch.quantization.qconfig import (
     default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
 )
 
-from horizon_plugin_pytorch.utils.onnx_helper import (
-    export_to_onnx,
-    export_quantized_onnx,
-)
-
-
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -101,10 +95,11 @@ def evaluate(
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             top1.update(acc1, image.size(0))
             top5.update(acc5, image.size(0))
-            print("-", end="", flush=True)
+            print(".", end="", flush=True)
         print()
 
     return top1, top5
+
 
 def train_one_epoch(
     model: nn.Module,
@@ -120,7 +115,7 @@ def train_one_epoch(
 
     model.to(device)
 
-    for i,(image, target) in enumerate(data_loader):
+    for image, target in data_loader:
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -133,8 +128,7 @@ def train_one_epoch(
         top1.update(acc1, image.size(0))
         top5.update(acc5, image.size(0))
         avgloss.update(loss, image.size(0))
-        if i%2 ==0:
-            print(".", end="", flush=True)
+        print(".", end="", flush=True)
     print()
 
     print(
@@ -142,11 +136,6 @@ def train_one_epoch(
         " {:.3f} Acc@5 {:.3f}".format(avgloss.avg, top1.avg, top5.avg)
     )
 
-
-
-
-
-# 准备数据集，请注意 collate_fn 中对 rgb2centered_yuv 的使用
 def prepare_data_loaders(
     data_path: str, train_batch_size: int, eval_batch_size: int
 ) -> Tuple[data.DataLoader, data.DataLoader]:
@@ -227,66 +216,84 @@ class FxQATReadyMobileNetV2(MobileNetV2):
 
         return x
 
-def main():
-        
-    model_path = "model/mobilenetv2"
-    data_path = "data"
-    train_batch_size = 256
-    eval_batch_size = 256
-    epoch_num = 30
-    device = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+
+float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
+model_path = "model/mobilenetv2"
+data_path = "data"
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+train_batch_size = 256
+eval_batch_size = 256
+# Calibration 使用的数据量，配置为 inf 以使用全部数据
+num_examples = float("inf")
+# 目标硬件平台的代号
+march = March.BAYES
+epoch_num = 10
+# 在进行模型转化前，必须设置好模型将要执行的硬件平台
+set_march(march)
 
 
-    if not os.path.exists(model_path):
-        os.makedirs(model_path, exist_ok=True)
+# 准备数据集
+train_data_loader, eval_data_loader = prepare_data_loaders(
+    data_path, train_batch_size, eval_batch_size
+)
 
-    # 浮点模型初始化
-    float_model = FxQATReadyMobileNetV2()
+# 将模型转为 QAT 状态
+qat_model = prepare_qat_fx(
+    copy.deepcopy(float_model),
+    {
+        "": default_qat_8bit_fake_quant_qconfig,
+        "module_name": {
+            "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+        },
+    },
+).to(device)
 
-    # 准备数据集
-    train_data_loader, eval_data_loader = prepare_data_loaders(
-        data_path, train_batch_size, eval_batch_size
-    )
+# 加载 Calibration 模型中的量化参数
+qat_model.load_state_dict(torch.load("./model/mobilenetv2/qat-checkpoint.ckpt"))
+   
 
-    optimizer = torch.optim.Adam(
-        float_model.parameters(), lr=0.001, weight_decay=1e-3)
-    best_acc = 0
+# 用户可根据需要修改以下参数
+# 1. 使用哪个模型作为流程的输入，可以选择 calib_model 或 qat_model
+base_model = qat_model
+######################################################################
 
-    for nepoch in range(epoch_num):
-        float_model.train()
-        train_one_epoch(
-            float_model,
-            nn.CrossEntropyLoss(),
-            optimizer,
-            None,
-            train_data_loader,
-            device,
-        )
+# 将模型转为定点状态
+quantized_model = convert_fx(base_model).to(device)
 
-        # 浮点精度测试
-        float_model.eval()
-        top1, top5 = evaluate(float_model, eval_data_loader, device)
+######################################################################
+# 用户可根据需要修改以下参数
+# 1. 编译时启用的优化等级，可选 0~3，等级越高编译出的模型上板执行速度越快，
+#    但编译过程会慢
+compile_opt = "O1"
+######################################################################
 
-        print(
-            "Float Epoch {}: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
-                nepoch, top1.avg, top5.avg
-            )
-        )
+# 这里的 example_input 也可以是随机生成的数据，但是推荐使用真实数据，以提高
+# 性能测试的准确性
+example_input = next(iter(eval_data_loader))[0]
 
-        if top1.avg > best_acc:
-            best_acc = top1.avg
-            # 保存最佳浮点模型参数
-            torch.save(
-                float_model.state_dict(),
-                os.path.join(model_path, "float-checkpoint_state_dict.ckpt"),
-            )
-            torch.save(
-                float_model,
-                os.path.join(model_path, "float-checkpoint.ckpt"),
-            )
-    for i, (image, target) in enumerate(eval_data_loader):
-        if i == 1:
-            image, target = image.to(device), target.to(device)
-            torch.onnx.export(float_model,image,os.path.join(model_path,'MobileNetV2_float32.onnx'))
-if __name__ == '__main__':
-    main()
+# 通过 trace 将模型序列化并生成计算图，注意模型和数据要放在 CPU 上
+script_model = torch.jit.trace(quantized_model.cpu(), example_input)
+torch.jit.save(script_model, os.path.join(model_path, "int_model.pt"))
+
+# 模型检查
+check_model(script_model, [example_input])
+
+
+# 模型编译，生成的 hbm 文件即为可部署的模型
+ret = compile_model(
+    script_model,
+    [example_input],
+    hbm=os.path.join(model_path, "model.hbm"),
+    input_source="pyramid",
+    opt=compile_opt,
+)
+
+# 模型性能测试
+ret = perf_model(
+    script_model,
+    [example_input],
+    out_dir=os.path.join(model_path, "perf_out"),
+    input_source="pyramid",
+    opt=compile_opt,
+    layer_details=True,
+)
