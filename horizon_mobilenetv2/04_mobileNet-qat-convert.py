@@ -271,6 +271,7 @@ def main():
     for i, (image, target) in enumerate(eval_data_loader):
         if i == 1:
             image, target = image.to(device), target.to(device)
-            export_quantized_onnx(float_model,image,os.path.join(model_path,'MobileNetV2_int8.onnx'))
+            export_quantized_onnx(float_model,image,os.path.join(model_path+"/onnx/",'MobileNetV2_int8.onnx'))
+            
 if __name__ == '__main__':
     main()

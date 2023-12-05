@@ -266,7 +266,6 @@ def main():
             if cnt >= num_examples:
                 break
         print()
-        print("+++--+++---+++---+++++-----++++-++-+-+")
 
     # 测试伪量化精度
     # 注意此处对模型状态的控制
@@ -286,7 +285,7 @@ def main():
     for i, (image, target) in enumerate(eval_data_loader):
         if i == 1:
             image, target = image.to(device), target.to(device)
-            torch.onnx.export(float_model,image,os.path.join(model_path,'MobileNetV2_calib.onnx'))
+            torch.onnx.export(float_model,image,os.path.join(model_path+"/onnx/",'MobileNetV2_calib.onnx'))
 
 
 

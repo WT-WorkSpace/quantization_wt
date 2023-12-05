@@ -216,84 +216,78 @@ class FxQATReadyMobileNetV2(MobileNetV2):
 
         return x
 
+def main():
+        
+    float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
+    model_path = "model/mobilenetv2"
+    data_path = "data"
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    train_batch_size = 256
+    eval_batch_size = 256
+    # Calibration 使用的数据量，配置为 inf 以使用全部数据
+    num_examples = float("inf")
+    # 目标硬件平台的代号
+    march = March.BAYES
+    epoch_num = 10
+    # 在进行模型转化前，必须设置好模型将要执行的硬件平台
+    set_march(march)
 
-float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
-model_path = "model/mobilenetv2"
-data_path = "data"
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-train_batch_size = 256
-eval_batch_size = 256
-# Calibration 使用的数据量，配置为 inf 以使用全部数据
-num_examples = float("inf")
-# 目标硬件平台的代号
-march = March.BAYES
-epoch_num = 10
-# 在进行模型转化前，必须设置好模型将要执行的硬件平台
-set_march(march)
 
+    # 准备数据集
+    train_data_loader, eval_data_loader = prepare_data_loaders(
+        data_path, train_batch_size, eval_batch_size
+    )
 
-# 准备数据集
-train_data_loader, eval_data_loader = prepare_data_loaders(
-    data_path, train_batch_size, eval_batch_size
-)
-
-# 将模型转为 QAT 状态
-qat_model = prepare_qat_fx(
-    copy.deepcopy(float_model),
-    {
-        "": default_qat_8bit_fake_quant_qconfig,
-        "module_name": {
-            "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+    # 将模型转为 QAT 状态
+    qat_model = prepare_qat_fx(
+        copy.deepcopy(float_model),
+        {
+            "": default_qat_8bit_fake_quant_qconfig,
+            "module_name": {
+                "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+            },
         },
-    },
-).to(device)
+    ).to(device)
 
-# 加载 Calibration 模型中的量化参数
-qat_model.load_state_dict(torch.load("./model/mobilenetv2/qat-checkpoint.ckpt"))
-   
+    # 加载 Calibration 模型中的量化参数
+    qat_model.load_state_dict(torch.load("./model/mobilenetv2/qat-checkpoint.ckpt"))
+    
+    base_model = qat_model
 
-# 用户可根据需要修改以下参数
-# 1. 使用哪个模型作为流程的输入，可以选择 calib_model 或 qat_model
-base_model = qat_model
-######################################################################
+    quantized_model = convert_fx(base_model).to(device)
 
-# 将模型转为定点状态
-quantized_model = convert_fx(base_model).to(device)
+    compile_opt = "O1"
 
-######################################################################
-# 用户可根据需要修改以下参数
-# 1. 编译时启用的优化等级，可选 0~3，等级越高编译出的模型上板执行速度越快，
-#    但编译过程会慢
-compile_opt = "O1"
-######################################################################
+    # 这里的 example_input 也可以是随机生成的数据，但是推荐使用真实数据，以提高
+    # 性能测试的准确性
+    example_input = next(iter(eval_data_loader))[0]
 
-# 这里的 example_input 也可以是随机生成的数据，但是推荐使用真实数据，以提高
-# 性能测试的准确性
-example_input = next(iter(eval_data_loader))[0]
+    # 通过 trace 将模型序列化并生成计算图，注意模型和数据要放在 CPU 上
+    script_model = torch.jit.trace(quantized_model.cpu(), example_input)
+    torch.jit.save(script_model, os.path.join(model_pathmodel_path+"/jit/", "int_model.pt"))
 
-# 通过 trace 将模型序列化并生成计算图，注意模型和数据要放在 CPU 上
-script_model = torch.jit.trace(quantized_model.cpu(), example_input)
-torch.jit.save(script_model, os.path.join(model_path, "int_model.pt"))
-
-# 模型检查
-check_model(script_model, [example_input])
+    # 模型检查
+    check_model(script_model, [example_input])
 
 
-# 模型编译，生成的 hbm 文件即为可部署的模型
-ret = compile_model(
-    script_model,
-    [example_input],
-    hbm=os.path.join(model_path, "model.hbm"),
-    input_source="pyramid",
-    opt=compile_opt,
-)
+    # 模型编译，生成的 hbm 文件即为可部署的模型
+    ret = compile_model(
+        script_model,
+        [example_input],
+        hbm=os.path.join(model_path+"/jit/", "model.hbm"),
+        input_source="pyramid",
+        opt=compile_opt,
+    )
 
-# 模型性能测试
-ret = perf_model(
-    script_model,
-    [example_input],
-    out_dir=os.path.join(model_path, "perf_out"),
-    input_source="pyramid",
-    opt=compile_opt,
-    layer_details=True,
-)
+    # 模型性能测试
+    ret = perf_model(
+        script_model,
+        [example_input],
+        out_dir=os.path.join(model_path+"/jit/", "perf_out"),
+        input_source="pyramid",
+        opt=compile_opt,
+        layer_details=True,
+    )
+
+if __name__ == '__main__':
+    main()

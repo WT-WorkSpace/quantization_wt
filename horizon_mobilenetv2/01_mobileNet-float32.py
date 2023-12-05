@@ -287,6 +287,6 @@ def main():
     for i, (image, target) in enumerate(eval_data_loader):
         if i == 1:
             image, target = image.to(device), target.to(device)
-            torch.onnx.export(float_model,image,os.path.join(model_path,'MobileNetV2_float32.onnx'))
+            torch.onnx.export(float_model,image,os.path.join(model_path+"/onnx/",'MobileNetV2_float32.onnx'))
 if __name__ == '__main__':
     main()

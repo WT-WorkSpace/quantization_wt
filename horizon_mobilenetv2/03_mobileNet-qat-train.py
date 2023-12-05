@@ -229,7 +229,7 @@ def main():
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     train_batch_size = 256
     eval_batch_size = 256
-    epoch_num = 10
+    epoch_num = 3
 
     # 目标硬件平台的代号
     march = March.BAYES
@@ -292,6 +292,6 @@ def main():
     for i, (image, target) in enumerate(eval_data_loader):
         if i == 1:
             image, target = image.to(device), target.to(device)
-            export_to_onnx(float_model,image,os.path.join(model_path,'MobileNetV2_qat_train.onnx'))
+            export_to_onnx(float_model,image,os.path.join(model_path+"/onnx/",'MobileNetV2_qat_train.onnx'))
 if __name__ == '__main__':
     main()
