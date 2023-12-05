@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 from torch import Tensor
 from torch.quantization import DeQuantStub
 from torchvision.datasets import CIFAR10
-from torchvision.models.mobilenetv2 import MobileNetV2
+from torchvision.models.mobilenetv2 import MobileNetV2 
 from torch.utils import data
 from typing import Optional, Callable, List, Tuple
 
@@ -95,11 +95,10 @@ def evaluate(
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             top1.update(acc1, image.size(0))
             top5.update(acc5, image.size(0))
-            print(".", end="", flush=True)
+            print("-", end="", flush=True)
         print()
 
     return top1, top5
-
 
 def train_one_epoch(
     model: nn.Module,
@@ -115,7 +114,7 @@ def train_one_epoch(
 
     model.to(device)
 
-    for image, target in data_loader:
+    for i,(image, target) in enumerate(data_loader):
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -128,7 +127,8 @@ def train_one_epoch(
         top1.update(acc1, image.size(0))
         top5.update(acc5, image.size(0))
         avgloss.update(loss, image.size(0))
-        print(".", end="", flush=True)
+        if i%2 ==0:
+            print(".", end="", flush=True)
     print()
 
     print(
@@ -215,100 +215,68 @@ class FxQATReadyMobileNetV2(MobileNetV2):
         x = self.dequant(x)
 
         return x
+def main():
+        
+
+    float_model = torch.load("/home/wt/code/tanway_code/quantization_wt/horizon_mobilenetv2/model/mobilenetv2/float-checkpoint.ckpt")
+    model_path = "model/mobilenetv2"
+    data_path = "data"
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    calib_batch_size = 256
+    eval_batch_size = 256
+    num_examples = float("inf")
+
+    march = March.BAYES
+    set_march(march)
+
+    calib_model = prepare_qat_fx(
+        # 输出模型会共享输入模型的 attributes，为不影响 float_model 的后续使用,
+        # 此处进行了 deepcopy
+        copy.deepcopy(float_model),
+        {
+            "": default_calib_8bit_fake_quant_qconfig,
+            "module_name": {
+                # 在模型的输出层为 Conv 或 Linear 时，可以使用 out_qconfig
+                # 配置为高精度输出
+                "classifier": default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
+            },
+        }).to(device)  # prepare_qat_fx 接口不保证输出模型的 device 和输入模型完全一致
+
+    # 准备数据集
+    calib_data_loader, eval_data_loader = prepare_data_loaders(
+        data_path, calib_batch_size, eval_batch_size)
+
+    # 执行 Calibration 过程（不需要 backward）
+    # 注意此处对模型状态的控制，模型需要处于 eval 状态以使 Bn 的行为符合要求
+    calib_model.eval()
+    set_fake_quantize(calib_model, FakeQuantState.CALIBRATION)
+
+    with torch.no_grad():
+        cnt = 0
+        for i,(image, target) in enumerate(calib_data_loader):
+            image, target = image.to(device), target.to(device)
+            calib_model(image)
+            print("🚎", end="", flush=True)
+            cnt += image.size(0)
+            if cnt >= num_examples:
+                break
+        print()
+        print("+++--+++---+++---+++++-----++++-++-+-+")
+
+    # 测试伪量化精度
+    # 注意此处对模型状态的控制
+    calib_model.eval()
+    set_fake_quantize(calib_model, FakeQuantState.VALIDATION)
 
 
-float_model = torch.load("/wt_workspace/horizon/model/mobilenetv2/float-checkpoint.ckpt")
 
+    top1, top5 = evaluate(calib_model,eval_data_loader,device)
+    print("Calibration: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(top1.avg, top5.avg))
 
-model_path = "model/mobilenetv2"
-# # 2. 数据集下载和保存的路径
-data_path = "data"
-# # 3. 训练时使用的 batch_size
-# train_batch_size = 256
-# # 4. 预测时使用的 batch_size
-# eval_batch_size = 256
-# # 5. 训练的 epoch 数
-# epoch_num = 30
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    # 保存 Calibration 模型参数
+    torch.save(
+        calib_model.state_dict(),
+        os.path.join(model_path, "calib-checkpoint_state_dict.ckpt"))
 
-######################################################################
-# 用户可根据需要修改以下参数
-# 1. Calibration 时使用的 batch_size
-calib_batch_size = 256
-# 2. Validation 时使用的 batch_size
-eval_batch_size = 256
-# 3. Calibration 使用的数据量，配置为 inf 以使用全部数据
-num_examples = float("inf")
-# 4. 目标硬件平台的代号
-march = March.BAYES
-######################################################################
-
-# 在进行模型转化前，必须设置好模型将要执行的硬件平台
-set_march(march)
-
-
-# 将模型转化为 Calibration 状态，以统计各处数据的数值分布特征
-calib_model = prepare_qat_fx(
-    # 输出模型会共享输入模型的 attributes，为不影响 float_model 的后续使用,
-    # 此处进行了 deepcopy
-    copy.deepcopy(float_model),
-    {
-        "": default_calib_8bit_fake_quant_qconfig,
-        "module_name": {
-            # 在模型的输出层为 Conv 或 Linear 时，可以使用 out_qconfig
-            # 配置为高精度输出
-            "classifier": default_calib_8bit_weight_32bit_out_fake_quant_qconfig,
-        },
-    },
-).to(
-    device
-)  # prepare_qat_fx 接口不保证输出模型的 device 和输入模型完全一致
-
-# 准备数据集
-calib_data_loader, eval_data_loader = prepare_data_loaders(
-    data_path, calib_batch_size, eval_batch_size
-)
-
-# 执行 Calibration 过程（不需要 backward）
-# 注意此处对模型状态的控制，模型需要处于 eval 状态以使 Bn 的行为符合要求
-calib_model.eval()
-set_fake_quantize(calib_model, FakeQuantState.CALIBRATION)
-with torch.no_grad():
-    cnt = 0
-    for image, target in calib_data_loader:
-        image, target = image.to(device), target.to(device)
-        calib_model(image)
-        print(".", end="", flush=True)
-        cnt += image.size(0)
-        if cnt >= num_examples:
-            break
-    print()
-
-# 测试伪量化精度
-# 注意此处对模型状态的控制
-calib_model.eval()
-set_fake_quantize(calib_model, FakeQuantState.VALIDATION)
-
-top1, top5 = evaluate(
-    calib_model,
-    eval_data_loader,
-    device,
-)
-print(
-    "Calibration: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
-        top1.avg, top5.avg
-    )
-)
-
-# 保存 Calibration 模型参数
-torch.save(
-    calib_model.state_dict(),
-    os.path.join(model_path, "calib-checkpoint_state_dict.ckpt"),
-)
-import sys  # 导入sys模块
-sys.setrecursionlimit(3000)  # 将默认的递归深度修改为3000
-
-torch.save(
-    calib_model,
-    os.path.join(model_path, "calib-checkpoint.ckpt"),
-)
+if __name__ == '__main__':
+    main()

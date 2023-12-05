@@ -95,7 +95,7 @@ def evaluate(
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             top1.update(acc1, image.size(0))
             top5.update(acc5, image.size(0))
-            print(".", end="", flush=True)
+            print("-", end="", flush=True)
         print()
 
     return top1, top5
@@ -115,7 +115,7 @@ def train_one_epoch(
 
     model.to(device)
 
-    for image, target in data_loader:
+    for i,(image, target) in enumerate(data_loader):
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -128,7 +128,8 @@ def train_one_epoch(
         top1.update(acc1, image.size(0))
         top5.update(acc5, image.size(0))
         avgloss.update(loss, image.size(0))
-        print(".", end="", flush=True)
+        if i%2 ==0:
+            print(".", end="", flush=True)
     print()
 
     print(
@@ -216,84 +217,73 @@ class FxQATReadyMobileNetV2(MobileNetV2):
 
         return x
 
+def main():
+    float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
+    model_path = "model/mobilenetv2"
+    data_path = "data"
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    train_batch_size = 256
+    eval_batch_size = 256
+    epoch_num = 10
 
-float_model = torch.load("/wt_workspace/horizon/model/mobilenetv2/float-checkpoint.ckpt")
-model_path = "model/mobilenetv2"
-data_path = "data"
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-train_batch_size = 256
-eval_batch_size = 256
-# Calibration 使用的数据量，配置为 inf 以使用全部数据
-num_examples = float("inf")
-# 目标硬件平台的代号
-march = March.BAYES
-epoch_num = 10
-# 在进行模型转化前，必须设置好模型将要执行的硬件平台
-set_march(march)
+    # 目标硬件平台的代号
+    march = March.BAYES
+    # 在进行模型转化前，必须设置好模型将要执行的硬件平台
+    set_march(march)
 
 
-# 准备数据集
-train_data_loader, eval_data_loader = prepare_data_loaders(
-    data_path, train_batch_size, eval_batch_size
-)
+    # 准备数据集
+    train_data_loader, eval_data_loader = prepare_data_loaders(
+        data_path, train_batch_size, eval_batch_size
+    )
 
-# 将模型转为 QAT 状态
-qat_model = prepare_qat_fx(
-    copy.deepcopy(float_model),
-    {
-        "": default_qat_8bit_fake_quant_qconfig,
-        "module_name": {
-            "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+    # 将模型转为 QAT 状态
+    qat_model = prepare_qat_fx(
+        copy.deepcopy(float_model),
+        {
+            "": default_qat_8bit_fake_quant_qconfig,
+            "module_name": {
+                "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+            },
         },
-    },
-).to(device)
+    ).to(device)
 
-# 加载 Calibration 模型中的量化参数
-qat_model.load_state_dict(torch.load("/wt_workspace/horizon/model/mobilenetv2/calib-checkpoint_state_dict.ckpt"))
-# qat_model.load_state_dict(calib_model.state_dict())
+    # 加载 Calibration 模型中的量化参数
+    qat_model.load_state_dict(torch.load("./model/mobilenetv2/calib-checkpoint_state_dict.ckpt"))
+    # qat_model.load_state_dict(calib_model.state_dict())
 
-# 进行量化感知训练
-# 作为一个 filetune 过程，量化感知训练一般需要设定较小的学习率
-optimizer = torch.optim.Adam(
-    qat_model.parameters(), lr=1e-3, weight_decay=1e-4
-)
+    # 进行量化感知训练
+    # 作为一个 filetune 过程，量化感知训练一般需要设定较小的学习率
+    optimizer = torch.optim.Adam(
+        qat_model.parameters(), lr=1e-3, weight_decay=1e-4)
 
-best_acc = 0
+    best_acc = 0
 
-for nepoch in range(epoch_num):
-    # 注意此处对 QAT 模型 training 状态的控制方法
-    qat_model.train()
-    set_fake_quantize(qat_model, FakeQuantState.QAT)
+    for nepoch in range(epoch_num):
+        # 注意此处对 QAT 模型 training 状态的控制方法
+        qat_model.train()
+        set_fake_quantize(qat_model, FakeQuantState.QAT)
 
-    train_one_epoch(
-        qat_model,
-        nn.CrossEntropyLoss(),
-        optimizer,
-        None,
-        train_data_loader,
-        device,
-    )
-
-    # 注意此处对 QAT 模型 eval 状态的控制方法
-    qat_model.eval()
-    set_fake_quantize(qat_model, FakeQuantState.VALIDATION)
-
-    top1, top5 = evaluate(
-        qat_model,
-        eval_data_loader,
-        device,
-    )
-    print(
-        "QAT Epoch {}: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
-            nepoch, top1.avg, top5.avg
+        train_one_epoch(
+            qat_model,
+            nn.CrossEntropyLoss(),
+            optimizer,
+            None,
+            train_data_loader,
+            device,
         )
-    )
 
-    if top1.avg > best_acc:
-        best_acc = top1.avg
+        # 注意此处对 QAT 模型 eval 状态的控制方法
+        qat_model.eval()
+        set_fake_quantize(qat_model, FakeQuantState.VALIDATION)
+        top1, top5 = evaluate(qat_model,eval_data_loader,device)
+        print("QAT Epoch {}: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(nepoch, top1.avg, top5.avg))
 
-        torch.save(
-            qat_model.state_dict(),
-            os.path.join(model_path, "qat-checkpoint.ckpt"),
-        )
-        
+        if top1.avg > best_acc:
+            best_acc = top1.avg
+            torch.save(
+                qat_model.state_dict(),
+                os.path.join(model_path, "qat-checkpoint.ckpt"))
+            
+if __name__ == '__main__':
+    main()

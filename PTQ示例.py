@@ -71,6 +71,6 @@ print(model_int8.conv.weight().element_size())#查看字节数变成了1
 量化中的类型： torch.quint8
 量化后的类型： torch.float32
 torch.qint8
-激活和权重的数据类型分别为：torch.float32, torch.float32
+激活和权重的数据类型分别为:torch.float32, torch.float32
 '''
 

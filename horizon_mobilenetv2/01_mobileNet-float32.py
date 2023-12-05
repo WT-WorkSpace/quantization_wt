@@ -95,11 +95,10 @@ def evaluate(
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             top1.update(acc1, image.size(0))
             top5.update(acc5, image.size(0))
-            print(".", end="", flush=True)
+            print("-", end="", flush=True)
         print()
 
     return top1, top5
-
 
 def train_one_epoch(
     model: nn.Module,
@@ -115,7 +114,7 @@ def train_one_epoch(
 
     model.to(device)
 
-    for image, target in data_loader:
+    for i,(image, target) in enumerate(data_loader):
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -128,7 +127,8 @@ def train_one_epoch(
         top1.update(acc1, image.size(0))
         top5.update(acc5, image.size(0))
         avgloss.update(loss, image.size(0))
-        print(".", end="", flush=True)
+        if i%2 ==0:
+            print(".", end="", flush=True)
     print()
 
     print(
@@ -137,23 +137,7 @@ def train_one_epoch(
     )
 
 
-    ######################################################################
-# 用户可根据需要修改以下参数
-# 1. 模型 ckpt 和编译产出物的保存路径
-model_path = "model/mobilenetv2"
-# 2. 数据集下载和保存的路径
-data_path = "data"
-# 3. 训练时使用的 batch_size
-train_batch_size = 256
-# 4. 预测时使用的 batch_size
-eval_batch_size = 256
-# 5. 训练的 epoch 数
-epoch_num = 30
-# 6. 模型保存和执行计算使用的 device
-device = (
-    torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-)
-######################################################################
+
 
 
 # 准备数据集，请注意 collate_fn 中对 rgb2centered_yuv 的使用
@@ -237,53 +221,63 @@ class FxQATReadyMobileNetV2(MobileNetV2):
 
         return x
 
+def main():
+        
+    model_path = "model/mobilenetv2"
+    data_path = "data"
+    train_batch_size = 256
+    eval_batch_size = 256
+    epoch_num = 30
+    device = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
-if not os.path.exists(model_path):
-    os.makedirs(model_path, exist_ok=True)
 
-# 浮点模型初始化
-float_model = FxQATReadyMobileNetV2()
+    if not os.path.exists(model_path):
+        os.makedirs(model_path, exist_ok=True)
 
-# 准备数据集
-train_data_loader, eval_data_loader = prepare_data_loaders(
-    data_path, train_batch_size, eval_batch_size
-)
+    # 浮点模型初始化
+    float_model = FxQATReadyMobileNetV2()
 
-# 由于模型的最后一层和预训练模型不一致，需要进行浮点 finetune
-optimizer = torch.optim.Adam(
-    float_model.parameters(), lr=0.001, weight_decay=1e-3
-)
-best_acc = 0
-
-for nepoch in range(epoch_num):
-    float_model.train()
-    train_one_epoch(
-        float_model,
-        nn.CrossEntropyLoss(),
-        optimizer,
-        None,
-        train_data_loader,
-        device,
+    # 准备数据集
+    train_data_loader, eval_data_loader = prepare_data_loaders(
+        data_path, train_batch_size, eval_batch_size
     )
 
-    # 浮点精度测试
-    float_model.eval()
-    top1, top5 = evaluate(float_model, eval_data_loader, device)
+    optimizer = torch.optim.Adam(
+        float_model.parameters(), lr=0.001, weight_decay=1e-3)
+    best_acc = 0
 
-    print(
-        "Float Epoch {}: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
-            nepoch, top1.avg, top5.avg
-        )
-    )
-
-    if top1.avg > best_acc:
-        best_acc = top1.avg
-        # 保存最佳浮点模型参数
-        torch.save(
-            float_model.state_dict(),
-            os.path.join(model_path, "float-checkpoint_state_dict.ckpt"),
-        )
-        torch.save(
+    for nepoch in range(epoch_num):
+        float_model.train()
+        train_one_epoch(
             float_model,
-            os.path.join(model_path, "float-checkpoint.ckpt"),
+            nn.CrossEntropyLoss(),
+            optimizer,
+            None,
+            train_data_loader,
+            device,
         )
+
+        # 浮点精度测试
+        float_model.eval()
+        top1, top5 = evaluate(float_model, eval_data_loader, device)
+
+        print(
+            "Float Epoch {}: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
+                nepoch, top1.avg, top5.avg
+            )
+        )
+
+        if top1.avg > best_acc:
+            best_acc = top1.avg
+            # 保存最佳浮点模型参数
+            torch.save(
+                float_model.state_dict(),
+                os.path.join(model_path, "float-checkpoint_state_dict.ckpt"),
+            )
+            torch.save(
+                float_model,
+                os.path.join(model_path, "float-checkpoint.ckpt"),
+            )
+
+if __name__ == '__main__':
+    main()

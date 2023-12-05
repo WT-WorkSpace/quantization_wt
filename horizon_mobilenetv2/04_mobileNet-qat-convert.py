@@ -115,7 +115,7 @@ def train_one_epoch(
 
     model.to(device)
 
-    for image, target in data_loader:
+    for i,(image, target) in enumerate(data_loader):
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -128,7 +128,8 @@ def train_one_epoch(
         top1.update(acc1, image.size(0))
         top5.update(acc5, image.size(0))
         avgloss.update(loss, image.size(0))
-        print(".", end="", flush=True)
+        if i%2 ==0:
+            print(".", end="", flush=True)
     print()
 
     print(
@@ -216,62 +217,51 @@ class FxQATReadyMobileNetV2(MobileNetV2):
 
         return x
 
+def main():
+        
+    float_model = torch.load("./model/mobilenetv2/float-checkpoint.ckpt")
+    model_path = "model/mobilenetv2"
+    data_path = "data"
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    train_batch_size = 256
+    eval_batch_size = 256
+    # 目标硬件平台的代号
+    march = March.BAYES
+    # 在进行模型转化前，必须设置好模型将要执行的硬件平台
+    set_march(march)
 
-float_model = torch.load("/wt_workspace/horizon/model/mobilenetv2/float-checkpoint.ckpt")
-model_path = "model/mobilenetv2"
-data_path = "data"
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-train_batch_size = 256
-eval_batch_size = 256
-# Calibration 使用的数据量，配置为 inf 以使用全部数据
-num_examples = float("inf")
-# 目标硬件平台的代号
-march = March.BAYES
-epoch_num = 10
-# 在进行模型转化前，必须设置好模型将要执行的硬件平台
-set_march(march)
-
-
-# 准备数据集
-train_data_loader, eval_data_loader = prepare_data_loaders(
-    data_path, train_batch_size, eval_batch_size
-)
-
-# 将模型转为 QAT 状态
-qat_model = prepare_qat_fx(
-    copy.deepcopy(float_model),
-    {
-        "": default_qat_8bit_fake_quant_qconfig,
-        "module_name": {
-            "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
-        },
-    },
-).to(device)
-
-# 加载 Calibration 模型中的量化参数
-qat_model.load_state_dict(torch.load("/wt_workspace/horizon/model/mobilenetv2/qat-checkpoint.ckpt"))
-   
-
-# 用户可根据需要修改以下参数
-# 1. 使用哪个模型作为流程的输入，可以选择 calib_model 或 qat_model
-base_model = qat_model
-######################################################################
-
-# 将模型转为定点状态
-quantized_model = convert_fx(base_model).to(device)
-
-# 测试定点模型精度
-top1, top5 = evaluate(
-    quantized_model,
-    eval_data_loader,
-    device,
-)
-print(
-    "Quantized model: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
-        top1.avg, top5.avg
+    # 准备数据集
+    train_data_loader, eval_data_loader = prepare_data_loaders(
+        data_path, train_batch_size, eval_batch_size
     )
-)
-torch.save(
-    quantized_model.state_dict(),
-    os.path.join(model_path, "qat_convert_int8-checkpoint.ckpt"),
-)
+    # 将模型转为 QAT 状态
+    qat_model = prepare_qat_fx(
+        copy.deepcopy(float_model),
+        {
+            "": default_qat_8bit_fake_quant_qconfig,
+            "module_name": {
+                "classifier": default_qat_8bit_weight_32bit_out_fake_quant_qconfig,
+            },
+        },
+    ).to(device)
+
+    # 加载 Calibration 模型中的量化参数
+    qat_model.load_state_dict(torch.load("./model/mobilenetv2/qat-checkpoint.ckpt"))
+    
+    # 用户可根据需要修改以下参数
+    # 1. 使用哪个模型作为流程的输入，可以选择 calib_model 或 qat_model
+    base_model = qat_model
+
+    # 将模型转为定点状态
+    quantized_model = convert_fx(base_model).to(device)
+
+    # 测试定点模型精度
+    top1, top5 = evaluate( quantized_model,eval_data_loader,device)
+    print("Quantized model: evaluation Acc@1 {:.3f} Acc@5 {:.3f}".format(
+            top1.avg, top5.avg))
+    torch.save(
+        quantized_model.state_dict(),
+        os.path.join(model_path, "qat_convert_int8-checkpoint.ckpt") )
+
+if __name__ == '__main__':
+    main()
